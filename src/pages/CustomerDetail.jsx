@@ -2,9 +2,9 @@ import { useState, useEffect } from "react";
 import { C, cardStyle, inputStyle, btnStyle, labelStyle, Ic, STATUS, fmt, fmtDate } from "../theme.jsx";
 import { upd as updDoc, add as addDoc, subscribe } from "../firebase.js";
 
-// ============================================================
+// ===========================================================
 // Customer Detail Page – HubSpot-style
-// ============================================================
+// ===========================================================
 export default function CustomerDetail({ customer, deals, tasks, user, settings, onBack, onEditCustomer, notify }) {
   const [tab, setTab] = useState("timeline"); // timeline | details | emails
   const [activities, setActivities] = useState([]);
@@ -18,6 +18,21 @@ export default function CustomerDetail({ customer, deals, tasks, user, settings,
   const [noteText, setNoteText] = useState("");
   const [emailTracking, setEmailTracking] = useState([]);
 
+  // ---- Activity Feed State ----
+  const [feedEntries, setFeedEntries] = useState([]);
+  const [feedShowForm, setFeedShowForm] = useState(false);
+  const [feedSubmitting, setFeedSubmitting] = useState(false);
+  const [feedType, setFeedType] = useState("note");
+  const [feedText, setFeedText] = useState("");
+
+  const FEED_TYPES = {
+    note:    { label: "Notiz",   icon: "edit",    color: C.acc },
+    call:    { label: "Anruf",  icon: "phone",   color: C.ok },
+    email:   { label: "E-Mail", icon: "mail",    color: "#8B5CF6" },
+    meeting: { label: "Meeting",icon: "users",   color: C.warn },
+    status:  { label: "Status", icon: "refresh", color: C.txM },
+  };
+
   // Build activity timeline
   useEffect(() => {
     const items = [];
@@ -30,7 +45,7 @@ export default function CustomerDetail({ customer, deals, tasks, user, settings,
     // Deals for this customer
     const custDeals = deals.filter((d) => d.customerName?.toLowerCase() === customer.name?.toLowerCase() || d.customerName?.toLowerCase() === customer.company?.toLowerCase());
     custDeals.forEach((d) => {
-      items.push({ type: "deal", date: d.createdAt, title: `Angebot: ${d.title || "—"}`, detail: `${fmt(d.amount)} · ${STATUS[d.status]?.label || d.status}`, status: d.status, id: d.id });
+      items.push({ type: "deal", date: d.createdAt, title: `Angebot: ${d.title || "–"}`, detail: `${fmt(d.amount)} · ${STATUS[d.status]?.label || d.status}`, status: d.status, id: d.id });
     });
 
     // Tasks for this customer
@@ -47,7 +62,7 @@ export default function CustomerDetail({ customer, deals, tasks, user, settings,
     // Email history from customer data
     if (customer.emailHistory) {
       customer.emailHistory.forEach((e) => {
-        items.push({ type: "email", date: e.sentAt, title: `Email: ${e.subject}`, detail: e.to, opened: e.opened, trackingId: e.trackingId });
+        items.push({ type: "email", date: e.sentAt, title: `Email: ${e.subject}`, detail: `An: ${e.to}`, opened: e.opened, trackingId: e.trackingId });
       });
     }
 
@@ -68,6 +83,41 @@ export default function CustomerDetail({ customer, deals, tasks, user, settings,
       setEmailTracking(data.filter((t) => t.customerId === customer.id));
     });
   }, [customer.id]);
+
+  // ---- Load Activity Feed entries ----
+  useEffect(() => {
+    if (!customer.id) return;
+    return subscribe("crm_activities", (data) => {
+      const filtered = data
+        .filter((a) => a.parentId === customer.id && a.parentType === "kunde")
+        .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+      setFeedEntries(filtered);
+    });
+  }, [customer.id]);
+
+  // ---- Submit Activity Feed entry ----
+  const submitFeedEntry = async () => {
+    if (!feedText.trim()) return;
+    setFeedSubmitting(true);
+    try {
+      await addDoc("crm_activities", {
+        parentId: customer.id,
+        parentType: "kunde",
+        type: feedType,
+        text: feedText.trim(),
+        createdBy: user?.displayName || user?.email || "Unbekannt",
+        createdByUid: user?.uid || null,
+      });
+      setFeedText("");
+      setFeedType("note");
+      setFeedShowForm(false);
+      notify("Eintrag gespeichert");
+    } catch (err) {
+      notify("Fehler: " + err.message, "error");
+    } finally {
+      setFeedSubmitting(false);
+    }
+  };
 
   // AI Email Assistant
   const generateWithAI = async () => {
@@ -106,14 +156,11 @@ export default function CustomerDetail({ customer, deals, tasks, user, settings,
     if (!settings?.smtpHost) { notify("Bitte SMTP in Einstellungen konfigurieren", "error"); return; }
     setSending(true);
     const trackingId = `${customer.id}_${Date.now()}`;
+    const htmlBody = `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.7;color:#333;">${emailBody}</div>`;
     try {
-      const sig = settings?.signature ? `\n\n---\n${settings.signature}` : "";
-      const htmlBody = (emailBody + sig).replace(/\n/g, "<br>");
-      const res = await fetch("/api/email", {
+      const res = await fetch("/api/send-email", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          to: emailTo, subject: emailSubject,
-          html: `<div style="font-family:'Segoe UI',sans-serif;font-size:14px;line-height:1.7;color:#333;">${htmlBody}</div>`,
           smtpHost: settings.smtpHost, smtpPort: settings.smtpPort,
           smtpUser: settings.smtpUser, smtpPass: settings.smtpPass,
           smtpFrom: settings.smtpFrom || settings.smtpUser,
@@ -124,7 +171,7 @@ export default function CustomerDetail({ customer, deals, tasks, user, settings,
       const data = await res.json();
       if (data.success) {
         // Save email to customer history
-        const history = customer.emailHistory || [];
+        const history = customer.emailHistory ? [...customer.emailHistory] : [];
         history.push({ sentAt: new Date().toISOString(), subject: emailSubject, to: emailTo, opened: false, trackingId, sentBy: user?.displayName });
         await updDoc("crm_customers", customer.id, { emailHistory: history });
         notify("Email gesendet an " + emailTo);
@@ -145,7 +192,7 @@ export default function CustomerDetail({ customer, deals, tasks, user, settings,
 
   const initials = (customer.name || "?").split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase();
 
-  // ============================================================
+  // ===========================================================
   return (
     <div style={{ animation: "fadeIn .3s" }}>
       {/* Header with profile */}
@@ -168,16 +215,13 @@ export default function CustomerDetail({ customer, deals, tasks, user, settings,
             </div>
             <p style={{ fontSize: 14, color: C.accL, fontWeight: 500 }}>{customer.position}</p>
             <p style={{ fontSize: 14, color: C.txM }}>{customer.company}</p>
-
             <div style={{ display: "flex", gap: 16, marginTop: 12, flexWrap: "wrap" }}>
               {customer.email && <a href={`mailto:${customer.email}`} style={{ fontSize: 12, color: C.txD, textDecoration: "none", display: "flex", alignItems: "center", gap: 4 }}><Ic name="mail" size={12} color={C.txD} /> {customer.email}</a>}
               {customer.phone && <span style={{ fontSize: 12, color: C.txD, display: "flex", alignItems: "center", gap: 4 }}><Ic name="phone" size={12} color={C.txD} /> {customer.phone}</span>}
-              {customer.mobile && <span style={{ fontSize: 12, color: C.txD, display: "flex", alignItems: "center", gap: 4 }}><Ic name="phone" size={12} color={C.txD} /> {customer.mobile}</span>}
             </div>
           </div>
 
-          {/* Action buttons */}
-          <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button onClick={() => { setShowEmail(true); setEmailTo(customer.email || ""); }} style={btnStyle(C.acc, C.wh, { padding: "8px 16px" })}>
               <Ic name="mail" size={14} color={C.wh} /> Email
             </button>
@@ -194,7 +238,8 @@ export default function CustomerDetail({ customer, deals, tasks, user, settings,
           <button key={k} onClick={() => setTab(k)} style={{
             padding: "8px 16px", borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: "pointer",
             background: tab === k ? C.accG : "transparent", border: `1px solid ${tab === k ? C.acc : C.bd}`, color: tab === k ? C.tx : C.txM,
-          }}>{l}
+          }}>
+            {l}
             {k === "emails" && customer.emailHistory?.length > 0 && <span style={{ marginLeft: 6, fontSize: 10, background: C.acc, color: C.wh, borderRadius: 10, padding: "1px 6px" }}>{customer.emailHistory.length}</span>}
           </button>
         ))}
@@ -203,18 +248,82 @@ export default function CustomerDetail({ customer, deals, tasks, user, settings,
       {/* ============ TIMELINE ============ */}
       {tab === "timeline" && (
         <>
-          {/* Quick note */}
+          {/* ---- NEUER ACTIVITY FEED (ersetzt Quick Note) ---- */}
           <div style={{ ...cardStyle, marginBottom: 16, padding: 16 }}>
-            <div style={{ display: "flex", gap: 10 }}>
-              <input value={noteText} onChange={(e) => setNoteText(e.target.value)} placeholder="Notiz hinzufügen..." style={{ ...inputStyle, flex: 1 }}
-                onKeyDown={(e) => e.key === "Enter" && addNote()} />
-              <button onClick={addNote} style={btnStyle(C.acc, C.wh, { padding: "10px 16px" })}>
-                <Ic name="add" size={14} color={C.wh} />
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: feedShowForm ? 14 : 0 }}>
+              <p style={{ fontSize: 11, color: C.txM, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".06em", margin: 0 }}>
+                Aktivitäten & Notizen ({feedEntries.length})
+              </p>
+              <button
+                onClick={() => setFeedShowForm(!feedShowForm)}
+                style={btnStyle(feedShowForm ? C.sf : C.acc, feedShowForm ? C.tx : C.wh, { fontSize: 12, padding: "6px 14px" })}
+              >
+                <Ic name={feedShowForm ? "x" : "add"} size={14} color={feedShowForm ? C.tx : C.wh} />
+                {feedShowForm ? "Abbrechen" : "Eintrag"}
               </button>
             </div>
+
+            {feedShowForm && (
+              <div>
+                <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+                  {Object.entries(FEED_TYPES).map(([k, v]) => (
+                    <button key={k} onClick={() => setFeedType(k)}
+                      style={btnStyle(feedType === k ? C.acc : C.sf, feedType === k ? C.wh : C.txM, { fontSize: 11, padding: "5px 12px", borderRadius: 20 })}>
+                      <Ic name={v.icon} size={12} color={feedType === k ? C.wh : C.txM} />
+                      {v.label}
+                    </button>
+                  ))}
+                </div>
+                <textarea
+                  value={feedText}
+                  onChange={(e) => setFeedText(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && e.ctrlKey && submitFeedEntry()}
+                  placeholder={`${FEED_TYPES[feedType].label} eintragen... (Strg+Enter)`}
+                  rows={3}
+                  style={{ ...inputStyle, resize: "vertical" }}
+                />
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 10 }}>
+                  <button onClick={() => { setFeedShowForm(false); setFeedText(""); }} style={btnStyle(C.sf, C.txM, { fontSize: 12 })}>Abbrechen</button>
+                  <button onClick={submitFeedEntry} disabled={feedSubmitting || !feedText.trim()}
+                    style={btnStyle(feedSubmitting || !feedText.trim() ? C.bd : C.acc, C.wh, { fontSize: 12 })}>
+                    <Ic name="check" size={14} color={C.wh} />
+                    {feedSubmitting ? "Speichert..." : "Speichern"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Feed Einträge */}
+            {feedEntries.length > 0 && (
+              <div style={{ marginTop: feedShowForm ? 16 : 10, position: "relative", paddingLeft: 28 }}>
+                <div style={{ position: "absolute", left: 11, top: 0, bottom: 0, width: 2, background: C.bd }} />
+                {feedEntries.map((entry, i) => {
+                  const t = FEED_TYPES[entry.type] || FEED_TYPES.note;
+                  return (
+                    <div key={entry.id} style={{ marginBottom: 14, position: "relative", animation: `slideUp .3s ease ${i * .04}s both` }}>
+                      <div style={{ position: "absolute", left: -22, top: 4, width: 12, height: 12, borderRadius: "50%", background: t.color, border: `2px solid ${C.bg}` }} />
+                      <div style={{ ...cardStyle, padding: "10px 14px" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, flexWrap: "wrap", gap: 4 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <Ic name={t.icon} size={13} color={t.color} />
+                            <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".06em", color: t.color }}>{t.label}</span>
+                            <span style={{ fontSize: 11, color: C.txM }}>· {entry.createdBy}</span>
+                          </div>
+                          <span style={{ fontSize: 10, color: C.txD }}>{fmtDate(entry.createdAt)}</span>
+                        </div>
+                        <p style={{ margin: 0, fontSize: 13, color: C.tx, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{entry.text}</p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {feedEntries.length === 0 && !feedShowForm && (
+              <p style={{ color: C.txD, fontSize: 13, marginTop: 10, marginBottom: 0 }}>Noch keine Einträge – füge den ersten hinzu</p>
+            )}
           </div>
 
-          {/* Timeline */}
+          {/* ---- BESTEHENDE TIMELINE (Deals, Tasks, Emails) ---- */}
           <div style={{ position: "relative", paddingLeft: 28 }}>
             {/* Vertical line */}
             <div style={{ position: "absolute", left: 11, top: 0, bottom: 0, width: 2, background: C.bd }} />
@@ -237,23 +346,24 @@ export default function CustomerDetail({ customer, deals, tasks, user, settings,
                     </div>
                     {a.detail && <p style={{ fontSize: 12, color: C.txM, marginTop: 6, lineHeight: 1.5, whiteSpace: "pre-line" }}>{a.detail}</p>}
 
-                    {/* Email tracking status */}
+                    {/* Email opened */}
                     {a.type === "email" && (
-                      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                        <span style={{ fontSize: 10, fontWeight: 600, color: C.ok, background: C.okG, padding: "2px 8px", borderRadius: 6 }}>✓ Gesendet</span>
-                        {a.opened && <span style={{ fontSize: 10, fontWeight: 600, color: "#3B82F6", background: "rgba(59,130,246,.12)", padding: "2px 8px", borderRadius: 6 }}>✓✓ Gelesen</span>}
-                        {!a.opened && <span style={{ fontSize: 10, fontWeight: 600, color: C.txD, background: C.bg, padding: "2px 8px", borderRadius: 6 }}>○ Nicht gelesen</span>}
-                      </div>
+                      <>{a.opened && <span style={{ fontSize: 10, fontWeight: 600, color: "#3B82F6", background: "rgba(59,130,246,.12)", padding: "2px 8px", borderRadius: 6 }}>✓✓ Gelesen</span>}
+                      {!a.opened && <span style={{ fontSize: 10, fontWeight: 600, color: C.txD, background: C.bg, padding: "2px 8px", borderRadius: 6 }}>○ Nicht gelesen</span>}</>
                     )}
 
                     {/* Deal status */}
                     {a.type === "deal" && a.status && (
-                      <span style={{ display: "inline-block", fontSize: 10, fontWeight: 600, marginTop: 8, padding: "2px 8px", borderRadius: 6, color: STATUS[a.status]?.color, background: STATUS[a.status]?.bg }}>{STATUS[a.status]?.label}</span>
+                      <span style={{ display: "inline-block", fontSize: 10, fontWeight: 600, marginTop: 8, padding: "2px 8px", borderRadius: 6, color: STATUS[a.status]?.color, background: STATUS[a.status]?.bg }}>
+                        {STATUS[a.status]?.label}
+                      </span>
                     )}
 
                     {/* Task done */}
                     {a.type === "task" && (
-                      <span style={{ display: "inline-block", fontSize: 10, fontWeight: 600, marginTop: 8, padding: "2px 8px", borderRadius: 6, color: a.done ? C.ok : C.warn, background: a.done ? C.okG : C.warnG }}>{a.done ? "✓ Erledigt" : "○ Offen"}</span>
+                      <span style={{ display: "inline-block", fontSize: 10, fontWeight: 600, marginTop: 8, padding: "2px 8px", borderRadius: 6, color: a.done ? C.ok : C.warn, background: a.done ? C.okG : C.warnG }}>
+                        {a.done ? "✓ Erledigt" : "○ Offen"}
+                      </span>
                     )}
 
                     {/* WhatsApp */}
@@ -307,7 +417,7 @@ export default function CustomerDetail({ customer, deals, tasks, user, settings,
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                   <div>
                     <p style={{ fontSize: 14, fontWeight: 600 }}>{e.subject}</p>
-                    <p style={{ fontSize: 12, color: C.txM, marginTop: 2 }}>An: {e.to} · {e.sentBy || "—"}</p>
+                    <p style={{ fontSize: 12, color: C.txM, marginTop: 2 }}>An: {e.to} · {e.sentBy || "–"}</p>
                   </div>
                   <span style={{ fontSize: 10, color: C.txD }}>{fmtDate(e.sentAt)}</span>
                 </div>
@@ -331,17 +441,19 @@ export default function CustomerDetail({ customer, deals, tasks, user, settings,
 
       {/* ============ EMAIL COMPOSER ============ */}
       {showEmail && (
-        <div style={{ position: "fixed", inset: 0, zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(10,22,40,.85)", backdropFilter: "blur(8px)", padding: 16 }} onClick={() => setShowEmail(false)}>
-          <div onClick={(e) => e.stopPropagation()} style={{ ...cardStyle, maxWidth: 600, width: "100%", maxHeight: "90vh", overflow: "auto", animation: "slideUp .3s ease" }}>
+        <div style={{ position: "fixed", inset: 0, zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(10,22,40,.85)", backdropFilter: "blur(8px)", padding: 24 }} onClick={() => setShowEmail(false)}>
+          <div onClick={(e) => e.stopPropagation()} style={{ ...cardStyle, maxWidth: 600, width: "100%", maxHeight: "85vh", overflow: "auto", animation: "slideUp .3s ease" }}>
             <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 16 }}>Email an {customer.name}</h3>
 
             {/* AI Assistant */}
             <div style={{ background: C.accG, borderRadius: 10, padding: 14, marginBottom: 16, border: `1px solid ${C.acc}33` }}>
               <p style={{ fontSize: 12, fontWeight: 600, color: C.acc, marginBottom: 8 }}>🤖 AI-Assistent</p>
               <div style={{ display: "flex", gap: 8 }}>
-                <input value={aiPrompt} onChange={(e) => setAiPrompt(e.target.value)} placeholder="z.B. 'Angebot nachfassen' oder 'Termin vereinbaren'" style={{ ...inputStyle, flex: 1, fontSize: 13 }}
+                <input value={aiPrompt} onChange={(e) => setAiPrompt(e.target.value)}
+                  placeholder="z.B. 'Angebot nachfassen' oder 'Termin vereinbaren'"
+                  style={{ ...inputStyle, flex: 1, fontSize: 13 }}
                   onKeyDown={(e) => e.key === "Enter" && generateWithAI()} />
-                <button onClick={generateWithAI} disabled={aiLoading} style={btnStyle(C.acc, C.wh, { padding: "8px 14px", opacity: aiLoading ? .5 : 1 })}>
+                <button onClick={generateWithAI} disabled={aiLoading} style={btnStyle(C.acc, C.wh, { fontSize: 12, flexShrink: 0 })}>
                   {aiLoading ? "..." : "Generieren"}
                 </button>
               </div>
@@ -349,27 +461,31 @@ export default function CustomerDetail({ customer, deals, tasks, user, settings,
                 {["Angebot nachfassen", "Termin vereinbaren", "Danke für Besuch", "Rechnung senden"].map((q) => (
                   <button key={q} onClick={() => { setAiPrompt(q); }} style={{
                     padding: "4px 10px", borderRadius: 6, fontSize: 10, fontWeight: 500, cursor: "pointer",
-                    background: "transparent", border: `1px solid ${C.acc}44`, color: C.accL,
+                    background: "transparent", border: `1px solid ${C.acc}44`, color: C.acc,
                   }}>{q}</button>
                 ))}
               </div>
             </div>
 
-            <div style={{ marginBottom: 10 }}><label style={labelStyle}>An</label><input style={inputStyle} value={emailTo} onChange={(e) => setEmailTo(e.target.value)} /></div>
-            <div style={{ marginBottom: 10 }}><label style={labelStyle}>Betreff</label><input style={inputStyle} value={emailSubject} onChange={(e) => setEmailSubject(e.target.value)} placeholder="Betreff..." /></div>
-            <div style={{ marginBottom: 10 }}><label style={labelStyle}>Nachricht</label><textarea style={{ ...inputStyle, resize: "vertical", minHeight: 160, lineHeight: 1.6 }} value={emailBody} onChange={(e) => setEmailBody(e.target.value)} placeholder="Email Text..." /></div>
+            <div style={{ marginBottom: 10 }}>
+              <label style={labelStyle}>An</label>
+              <input value={emailTo} onChange={(e) => setEmailTo(e.target.value)} style={inputStyle} />
+            </div>
+            <div style={{ marginBottom: 10 }}>
+              <label style={labelStyle}>Betreff</label>
+              <input value={emailSubject} onChange={(e) => setEmailSubject(e.target.value)} placeholder="Betreff..." style={inputStyle} />
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <label style={labelStyle}>Nachricht</label>
+              <textarea value={emailBody} onChange={(e) => setEmailBody(e.target.value)} rows={8} style={{ ...inputStyle, resize: "vertical", minHeight: 160, lineHeight: 1.6 }} />
+            </div>
 
-            {settings?.signature && (
-              <div style={{ padding: 12, background: C.bg, borderRadius: 8, marginBottom: 14, fontSize: 12, color: C.txD, lineHeight: 1.5, whiteSpace: "pre-line", borderLeft: `3px solid ${C.bd}` }}>
-                {settings.signature}
-              </div>
-            )}
-
-            <div style={{ display: "flex", gap: 10 }}>
-              <button onClick={sendEmail} disabled={sending} style={{ ...btnStyle(`linear-gradient(135deg,${C.acc},#1E4080)`, C.wh), flex: 1, justifyContent: "center", opacity: sending ? .5 : 1 }}>
-                <Ic name="mail" size={16} color={C.wh} /> {sending ? "Sende..." : "Email senden"}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button onClick={() => setShowEmail(false)} style={btnStyle(C.sf, C.txM, { fontSize: 13 })}>Abbrechen</button>
+              <button onClick={sendEmail} disabled={sending} style={btnStyle(sending ? C.bd : C.acc, C.wh, { fontSize: 13 })}>
+                <Ic name="mail" size={14} color={C.wh} />
+                {sending ? "Wird gesendet..." : "Senden"}
               </button>
-              <button onClick={() => setShowEmail(false)} style={btnStyle(C.sf2, C.txM, { border: `1px solid ${C.bd}` })}>Abbrechen</button>
             </div>
           </div>
         </div>
@@ -378,9 +494,9 @@ export default function CustomerDetail({ customer, deals, tasks, user, settings,
   );
 }
 
-// ============================================================
+// ===========================================================
 // Helpers
-// ============================================================
+// ===========================================================
 function detectLanguageFromEmail(email) {
   const d = (email || "").toLowerCase().split("@")[1] || "";
   if (d.endsWith(".tr") || d.endsWith(".com.tr")) return "tr";
@@ -399,5 +515,5 @@ function generateFallbackEmail(lang, customer, intent, senderName, signature) {
     es: `Estimado/a ${name},\n\nEspero que se encuentre bien.\n\n${intent ? `Respecto a: ${intent}\n\n` : ""}Quería ponerme en contacto con usted.\n\nNo dude en contactarme si tiene preguntas.\n\nAtentamente`,
     fr: `Cher/Chère ${name},\n\nJ'espère que vous allez bien.\n\n${intent ? `Concernant: ${intent}\n\n` : ""}Je souhaitais prendre contact avec vous.\n\nN'hésitez pas à me contacter.\n\nCordialement`,
   };
-  return templates[lang] || templates.en;
+  return (templates[lang] || templates.en) + (senderName ? `\n${senderName}` : "") + (signature ? `\n\n${signature}` : "");
 }
