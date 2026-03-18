@@ -203,9 +203,13 @@ export default function CustomerDetail({ customer, deals, tasks, user, settings,
 
         <div style={{ display: "flex", gap: 20, alignItems: "flex-start", flexWrap: "wrap" }}>
           {/* Avatar */}
-          <div style={{ width: 72, height: 72, borderRadius: 18, background: `linear-gradient(135deg, ${C.acc}, ${C.accL})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 26, fontWeight: 800, color: C.wh, flexShrink: 0 }}>
-            {initials}
-          </div>
+          {customer.customerAvatar ? (
+            <img src={customer.customerAvatar} alt={customer.name} style={{ width: 72, height: 72, borderRadius: 18, objectFit: "cover", flexShrink: 0, border: `1px solid ${C.bd}` }} />
+          ) : (
+            <div style={{ width: 72, height: 72, borderRadius: 18, background: `linear-gradient(135deg, ${C.acc}, ${C.accL})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 26, fontWeight: 800, color: C.wh, flexShrink: 0 }}>
+              {initials}
+            </div>
+          )}
 
           {/* Info */}
           <div style={{ flex: 1, minWidth: 200 }}>
@@ -311,7 +315,13 @@ export default function CustomerDetail({ customer, deals, tasks, user, settings,
                           </div>
                           <span style={{ fontSize: 10, color: C.txD }}>{fmtDate(entry.createdAt)}</span>
                         </div>
-                        <p style={{ margin: 0, fontSize: 13, color: C.tx, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{entry.text}</p>
+                        {entry.htmlBody ? (
+                          <div style={{ marginTop: 8, borderTop: `1px solid ${C.bd}`, paddingTop: 12 }}>
+                            <div style={{ zoom: 0.85, transformOrigin: "top left" }} dangerouslySetInnerHTML={{ __html: entry.htmlBody }} />
+                          </div>
+                        ) : (
+                          <p style={{ margin: 0, fontSize: 13, color: C.tx, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{entry.text}</p>
+                        )}
                       </div>
                     </div>
                   );

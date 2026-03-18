@@ -169,9 +169,15 @@ export default function ActivityFeed({ parentId, parentType, user }) {
                     </div>
                     <span style={{ fontSize: 10, color: C.txD }}>{fmtTs(entry.createdAt)}</span>
                   </div>
-                  <p style={{ margin: 0, fontSize: 13, color: C.tx, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
-                    {entry.text}
-                  </p>
+                  {entry.htmlBody ? (
+                    <div style={{ marginTop: 8, borderTop: `1px solid ${C.bd}`, paddingTop: 12 }}>
+                      <div style={{ zoom: 0.85, transformOrigin: "top left" }} dangerouslySetInnerHTML={{ __html: entry.htmlBody }} />
+                    </div>
+                  ) : (
+                    <p style={{ margin: 0, fontSize: 13, color: C.tx, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
+                      {entry.text}
+                    </p>
+                  )}
                 </div>
               </div>
             );
